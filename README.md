@@ -36,7 +36,7 @@ The generic `fritzbox_list_services` + `fritzbox_call_action` combo lets the LLM
 Requires Python 3.11+ and [uv](https://docs.astral.sh/uv/).
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/fritzbox-mcp.git
+git clone https://github.com/dimitree2k/fritzbox-mcp.git
 cd fritzbox-mcp
 ```
 
