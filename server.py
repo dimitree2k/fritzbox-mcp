@@ -3,12 +3,15 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
 import sys
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
+import requests
 from dotenv import load_dotenv
 from fritzconnection import FritzConnection
 from fritzconnection.lib.fritzhosts import FritzHosts
@@ -67,6 +70,40 @@ def _get_wlan() -> FritzWLAN:
     if _fw is None:
         _fw = FritzWLAN(fc=_get_fc())
     return _fw
+
+
+# ---------------------------------------------------------------------------
+# Fritz!Box Web UI session (for data not available via TR-064)
+# ---------------------------------------------------------------------------
+
+
+def _get_web_session() -> tuple[requests.Session, str]:
+    """Authenticate to the Fritz!Box web UI and return (session, SID)."""
+    host = os.environ.get("FRITZBOX_HOST", "192.168.178.1")
+    user = os.environ["FRITZBOX_USER"]
+    password = os.environ["FRITZBOX_PASSWORD"]
+
+    s = requests.Session()
+    r = s.get(f"http://{host}/login_sid.lua?version=2")
+    root = ET.fromstring(r.text)
+    challenge = root.find("Challenge").text
+
+    # PBKDF2 challenge-response (Fritz!OS 7.24+)
+    parts = challenge.split("$")
+    iter1 = int(parts[1])
+    salt1 = bytes.fromhex(parts[2])
+    iter2 = int(parts[3])
+    salt2 = bytes.fromhex(parts[4])
+
+    hash1 = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt1, iter1)
+    hash2 = hashlib.pbkdf2_hmac("sha256", hash1, salt2, iter2)
+    response = f"{parts[4]}${hash2.hex()}"
+
+    r = s.post(f"http://{host}/login_sid.lua", data={"username": user, "response": response})
+    sid = ET.fromstring(r.text).find("SID").text
+    if sid == "0000000000000000":
+        raise RuntimeError("Fritz!Box web UI login failed — check credentials")
+    return s, sid
 
 
 # ---------------------------------------------------------------------------
@@ -222,6 +259,119 @@ async def fritzbox_logs(max_entries: int = 50) -> str:
     # log_entries is a list of strings, newest first
     entries = log_entries[:max_entries] if log_entries else []
     return json.dumps(entries, indent=2, ensure_ascii=False)
+
+
+@mcp.tool()
+async def fritzbox_security_check() -> str:
+    """Run a comprehensive security check using the Fritz!Box web UI diagnostics.
+
+    Returns security-relevant settings from all categories: firewall filters,
+    WiFi security (WPS, encryption, MAC filter), user accounts and recent logins,
+    NAS shares, telephony encryption, ISP remote management, open LAN services,
+    and more. Data comes from the Fritz!Box security diagnostics page.
+    """
+    host = os.environ.get("FRITZBOX_HOST", "192.168.178.1")
+    try:
+        session, sid = _get_web_session()
+        r = session.post(f"http://{host}/data.lua", data={"sid": sid, "page": "secCheck"})
+        d = r.json().get("data", {})
+    except Exception as e:
+        return json.dumps({"success": False, "error": str(e)})
+
+    result = {}
+
+    # Firewall filters
+    vcs = d.get("vcs", [])
+    if vcs:
+        v = vcs[0]
+        result["firewall"] = v.get("filters", {})
+        result["port_forwards"] = v.get("ports", [])
+        result["services_exposed_to_wan"] = v.get("services", [])
+        mf = v.get("myfritz", {})
+        result["myfritz"] = {
+            "active": mf.get("isActive", False),
+            "forwarding": mf.get("forwarding", []),
+        }
+
+    # WiFi security
+    wlan = d.get("wlan", {})
+    access = wlan.get("access", {})
+    result["wifi"] = {
+        "encryption": access.get("encryption", ""),
+        "wps_active": access.get("wps", {}).get("isActive", False),
+        "stick_and_surf": access.get("stickAndSurf", False),
+        "mac_filter": access.get("macFilter", False),
+        "client_isolation": access.get("isolation", False),
+        "active_devices": access.get("activeDevices", 0),
+        "networks": access.get("aps", []),
+    }
+
+    # User accounts (names, permissions, recent logins — no passwords)
+    fb_users = d.get("fbUser", [])
+    result["users"] = [
+        {
+            "name": u.get("name", ""),
+            "rights": u.get("rights", []),
+            "recent_logins": u.get("logins", [])[:3],
+        }
+        for u in fb_users
+    ]
+
+    # Auth settings
+    pwd = d.get("pwd", {})
+    result["auth"] = {
+        "mode": pwd.get("authMode", ""),
+        "two_factor": pwd.get("twoFactor", False),
+    }
+
+    # NAS access
+    nas = d.get("nas", {})
+    result["nas"] = {
+        "remote_services": nas.get("access", {}).get("remoteServices", []),
+        "shares": nas.get("access", {}).get("releases", {}),
+        "users": nas.get("users", []),
+    }
+
+    # Telephony security
+    fon = d.get("fon", {})
+    result["telephony"] = {
+        "rules": fon.get("rules", {}),
+        "sip_connections": [
+            {
+                "number": c.get("number", ""),
+                "encrypted": c.get("encrypted", False),
+                "srtp_supported": c.get("srtpSupported", False),
+                "protocol": c.get("protocol", ""),
+            }
+            for c in fon.get("sipConnections", [])
+        ],
+    }
+
+    # Fritz!OS update status
+    result["fritzos"] = d.get("fritzos", {})
+
+    # ISP remote management (TR-069)
+    tr069 = d.get("tr069", {})
+    provider = tr069.get("provider", {})
+    result["tr069"] = {
+        "active": not provider.get("hide", True),
+        "protocol": provider.get("protocol", ""),
+        "verify_cert": provider.get("verify", False),
+    }
+
+    # LAN services
+    homenet = d.get("homenet", {})
+    result["lan_services"] = homenet.get("services", [])
+
+    # USP / remote access
+    usp = d.get("usp", {})
+    result["usp"] = {
+        "enabled": usp.get("enable", False),
+        "isp_access_allowed": usp.get("isp_access_allowed", False),
+        "services": usp.get("services", []),
+    }
+
+    return json.dumps(result, indent=2, ensure_ascii=False)
 
 
 # ---- Generic TR-064 tools ------------------------------------------------

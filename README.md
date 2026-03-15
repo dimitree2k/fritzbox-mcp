@@ -6,7 +6,7 @@ Uses [fritzconnection](https://github.com/kbr/fritzconnection) to talk TR-064 ov
 
 ## Tools
 
-**Read** (11 tools):
+**Read** (12 tools):
 
 | Tool | Description |
 |------|-------------|
@@ -17,6 +17,7 @@ Uses [fritzconnection](https://github.com/kbr/fritzconnection) to talk TR-064 ov
 | `fritzbox_firmware_info` | Firmware version + update availability |
 | `fritzbox_wifi_status` | WiFi networks (SSID, channel, standard) |
 | `fritzbox_logs` | Recent system event log |
+| `fritzbox_security_check` | Full security audit (firewall, WiFi, users, NAS, telephony, TR-069) |
 | `fritzbox_list_services` | Discover all TR-064 services and actions |
 | `fritzbox_call_action` | Call any TR-064 action (generic escape hatch) |
 
@@ -61,7 +62,7 @@ Register with Claude Code:
 claude mcp add -s user fritzbox -- uv run --directory /path/to/fritzbox-mcp python server.py
 ```
 
-Restart Claude Code. The 13 tools will be available in all sessions.
+Restart Claude Code. The 14 tools will be available in all sessions.
 
 ## Fritz!Box User Setup
 
@@ -76,6 +77,7 @@ Restart Claude Code. The 13 tools will be available in all sessions.
 - **stdio transport** -- Claude Code spawns the server as a subprocess, communicates via stdin/stdout
 - **Credentials** stay in `.env` (gitignored), never exposed to the LLM
 - **Lazy connection** -- connects to the Fritz!Box on first tool call, not at startup
+- **Dual API** -- TR-064 for standard operations, web UI session for security diagnostics
 - **All logging to stderr** -- stdout is reserved for MCP protocol
 
 ## License
