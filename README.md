@@ -6,7 +6,7 @@ Uses [fritzconnection](https://github.com/kbr/fritzconnection) to talk TR-064 ov
 
 ## Tools
 
-**Read** (12 tools):
+**Curated tools** (11):
 
 | Tool | Description |
 |------|-------------|
@@ -18,19 +18,20 @@ Uses [fritzconnection](https://github.com/kbr/fritzconnection) to talk TR-064 ov
 | `fritzbox_wifi_status` | WiFi networks (SSID, channel, standard) |
 | `fritzbox_logs` | Recent system event log |
 | `fritzbox_security_check` | Full security audit (firewall, WiFi, users, NAS, telephony, TR-069) |
-| `fritzbox_list_services` | Discover all TR-064 services and actions |
-| `fritzbox_call_action` | Call any TR-064 action (generic escape hatch) |
-
-**Write** (4 tools):
-
-| Tool | Description |
-|------|-------------|
 | `fritzbox_set_device_profile` | Block/allow a device's internet access |
 | `fritzbox_toggle_upnp` | Enable/disable UPnP port forwarding |
 | `fritzbox_toggle_wifi_guest` | Enable/disable guest WiFi |
 | `fritzbox_wake_on_lan` | Send Wake-on-LAN packet |
 
-The generic `fritzbox_list_services` + `fritzbox_call_action` combo lets the LLM discover and call any TR-064 action your Fritz!Box supports, without needing a dedicated tool for each one.
+**Generic tools** (4):
+
+| Tool | Description |
+|------|-------------|
+| `fritzbox_list_services` | Discover all TR-064 services and actions |
+| `fritzbox_call_action` | Call any TR-064 action by name |
+| `fritzbox_web_action` | Read/write any Fritz!Box web UI page via data.lua |
+
+The generic tools let the LLM discover and use any Fritz!Box capability without needing a dedicated tool. `fritzbox_list_services` + `fritzbox_call_action` cover TR-064, while `fritzbox_web_action` covers settings only available through the web UI (stealth mode, global filters, parental controls, etc.).
 
 ## Setup
 
@@ -62,7 +63,7 @@ Register with Claude Code:
 claude mcp add -s user fritzbox -- uv run --directory /path/to/fritzbox-mcp python server.py
 ```
 
-Restart Claude Code. The 14 tools will be available in all sessions.
+Restart Claude Code. The 15 tools will be available in all sessions.
 
 ## Fritz!Box User Setup
 

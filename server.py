@@ -374,6 +374,71 @@ async def fritzbox_security_check() -> str:
     return json.dumps(result, indent=2, ensure_ascii=False)
 
 
+@mcp.tool()
+async def fritzbox_web_action(page: str, apply: bool = False, fields: str = "{}") -> str:
+    """Read or write any Fritz!Box web UI page via data.lua.
+
+    This is the generic escape hatch for settings not available via TR-064,
+    like firewall stealth mode, global filters, or parental controls.
+
+    Read mode (apply=False): returns the page data as JSON.
+    Write mode (apply=True): posts the fields and returns the updated page data.
+
+    Known page IDs (discover more via fritzbox_security_check):
+        trafapp     — Global filter settings (stealth, NetBIOS, WPAD, SMTP, Teredo)
+        secCheck    — Security diagnostics overview
+        netSet      — Network settings
+        netDev      — Network devices
+        wSet        — WiFi settings
+        wKey        — WiFi encryption
+        wGuest      — Guest WiFi
+        chan         — WiFi channel
+
+    Example — enable stealth mode:
+        page="trafapp", apply=True, fields='{"isGlobalFilterStealth": "1"}'
+
+    Example — read global filter settings:
+        page="trafapp"
+
+    Args:
+        page: Fritz!Box web UI page ID (e.g. "trafapp", "secCheck", "netSet")
+        apply: If True, write the fields to the page. If False, just read.
+        fields: JSON object of form fields to submit (only used when apply=True)
+    """
+    host = os.environ.get("FRITZBOX_HOST", "192.168.178.1")
+    try:
+        session, sid = _get_web_session()
+    except Exception as e:
+        return json.dumps({"success": False, "error": str(e)})
+
+    try:
+        form = json.loads(fields) if apply else {}
+    except json.JSONDecodeError as e:
+        return json.dumps({"success": False, "error": f"Invalid JSON fields: {e}"})
+
+    payload = {"sid": sid, "page": page, "xhr": "1"}
+    if apply:
+        payload["apply"] = ""
+        payload.update(form)
+
+    try:
+        r = session.post(f"http://{host}/data.lua", data=payload)
+        result = r.json()
+        pid = result.get("pid", "")
+        if pid == "overview" and pid != page:
+            return json.dumps({
+                "success": False,
+                "error": f"Page '{page}' not found or access denied (redirected to overview)",
+            })
+        return json.dumps({
+            "success": True,
+            "page": pid,
+            "data": result.get("data", {}),
+        }, indent=2, default=str, ensure_ascii=False)
+    except Exception as e:
+        return json.dumps({"success": False, "error": str(e)})
+
+
 # ---- Generic TR-064 tools ------------------------------------------------
 
 
