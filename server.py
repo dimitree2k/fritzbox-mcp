@@ -18,6 +18,7 @@ from fritzconnection.lib.fritzhosts import FritzHosts
 from fritzconnection.lib.fritzstatus import FritzStatus
 from fritzconnection.lib.fritzwlan import FritzWLAN
 from mcp.server.mcpserver import MCPServer
+from mcp.types import ToolAnnotations
 
 # All logging to stderr — stdout is reserved for MCP stdio transport
 logging.basicConfig(
@@ -76,15 +77,39 @@ def _get_wlan() -> FritzWLAN:
 # Fritz!Box Web UI session (for data not available via TR-064)
 # ---------------------------------------------------------------------------
 
+REQ_TIMEOUT = 10  # seconds — blocking requests calls must not wedge the event loop
+
+
+def _base_url() -> str:
+    host = os.environ.get("FRITZBOX_HOST", "192.168.178.1")
+    scheme = os.environ.get("FRITZBOX_SCHEME", "http")
+    return f"{scheme}://{host}"
+
+
+_web_session_obj: requests.Session | None = None
+_web_sid: str | None = None
+
 
 def _get_web_session() -> tuple[requests.Session, str]:
-    """Authenticate to the Fritz!Box web UI and return (session, SID)."""
-    host = os.environ.get("FRITZBOX_HOST", "192.168.178.1")
+    """Return a cached (session, SID); re-authenticate only when the SID is stale."""
+    global _web_session_obj, _web_sid
+
+    if _web_session_obj is not None and _web_sid:
+        try:
+            r = _web_session_obj.get(
+                f"{_base_url()}/login_sid.lua", params={"sid": _web_sid}, timeout=REQ_TIMEOUT
+            )
+            if ET.fromstring(r.text).find("SID").text == _web_sid:
+                return _web_session_obj, _web_sid
+        except Exception as e:
+            log.info("Cached web session check failed (%s), re-authenticating", e)
+        log.info("Web session stale, re-authenticating")
+
     user = os.environ["FRITZBOX_USER"]
     password = os.environ["FRITZBOX_PASSWORD"]
 
     s = requests.Session()
-    r = s.get(f"http://{host}/login_sid.lua?version=2")
+    r = s.get(f"{_base_url()}/login_sid.lua?version=2", timeout=REQ_TIMEOUT)
     root = ET.fromstring(r.text)
     challenge = root.find("Challenge").text
 
@@ -99,10 +124,11 @@ def _get_web_session() -> tuple[requests.Session, str]:
     hash2 = hashlib.pbkdf2_hmac("sha256", hash1, salt2, iter2)
     response = f"{parts[4]}${hash2.hex()}"
 
-    r = s.post(f"http://{host}/login_sid.lua", data={"username": user, "response": response})
+    r = s.post(f"{_base_url()}/login_sid.lua", data={"username": user, "response": response}, timeout=REQ_TIMEOUT)
     sid = ET.fromstring(r.text).find("SID").text
     if sid == "0000000000000000":
         raise RuntimeError("Fritz!Box web UI login failed — check credentials")
+    _web_session_obj, _web_sid = s, sid
     return s, sid
 
 
@@ -112,10 +138,16 @@ def _get_web_session() -> tuple[requests.Session, str]:
 
 mcp = MCPServer("fritzbox")
 
+
+def _ann(**kwargs) -> ToolAnnotations:
+    """ToolAnnotations with the common open_world_hint already set."""
+    return ToolAnnotations(open_world_hint=False, **kwargs)
+
+
 # ---- Read tools -----------------------------------------------------------
 
 
-@mcp.tool()
+@mcp.tool(annotations=_ann(read_only_hint=True))
 async def fritzbox_device_list() -> str:
     """List all known network devices with name, IP, MAC, online status, and connection type."""
     hosts = _get_hosts()
@@ -133,7 +165,7 @@ async def fritzbox_device_list() -> str:
     return json.dumps(rows, indent=2)
 
 
-@mcp.tool()
+@mcp.tool(annotations=_ann(read_only_hint=True))
 async def fritzbox_device_info(ip_or_mac: str) -> str:
     """Get detailed info for a specific device by IP address or MAC address.
 
@@ -150,7 +182,7 @@ async def fritzbox_device_info(ip_or_mac: str) -> str:
     return json.dumps(info, indent=2, default=str)
 
 
-@mcp.tool()
+@mcp.tool(annotations=_ann(read_only_hint=True))
 async def fritzbox_connection_status() -> str:
     """Get WAN connection info: external IP, uptime, link speed, DNS, connection state."""
     fs = _get_status()
@@ -182,7 +214,7 @@ async def fritzbox_connection_status() -> str:
     return json.dumps(result, indent=2, default=str)
 
 
-@mcp.tool()
+@mcp.tool(annotations=_ann(read_only_hint=True))
 async def fritzbox_port_forwards() -> str:
     """List all active port forwarding rules."""
     fc = _get_fc()
@@ -209,7 +241,7 @@ async def fritzbox_port_forwards() -> str:
     return json.dumps(forwards, indent=2)
 
 
-@mcp.tool()
+@mcp.tool(annotations=_ann(read_only_hint=True))
 async def fritzbox_firmware_info() -> str:
     """Check current firmware version and whether an update is available."""
     fs = _get_status()
@@ -224,7 +256,7 @@ async def fritzbox_firmware_info() -> str:
     return json.dumps(result, indent=2)
 
 
-@mcp.tool()
+@mcp.tool(annotations=_ann(read_only_hint=True))
 async def fritzbox_wifi_status() -> str:
     """Get WiFi network status: enabled state, channel, SSID, standard. No passwords exposed."""
     fc = _get_fc()
@@ -247,7 +279,7 @@ async def fritzbox_wifi_status() -> str:
     return json.dumps(networks, indent=2)
 
 
-@mcp.tool()
+@mcp.tool(annotations=_ann(read_only_hint=True))
 async def fritzbox_logs(max_entries: int = 50) -> str:
     """Get recent Fritz!Box system event log entries.
 
@@ -261,7 +293,7 @@ async def fritzbox_logs(max_entries: int = 50) -> str:
     return json.dumps(entries, indent=2, ensure_ascii=False)
 
 
-@mcp.tool()
+@mcp.tool(annotations=_ann(read_only_hint=True))
 async def fritzbox_security_check() -> str:
     """Run a comprehensive security check using the Fritz!Box web UI diagnostics.
 
@@ -270,10 +302,9 @@ async def fritzbox_security_check() -> str:
     NAS shares, telephony encryption, ISP remote management, open LAN services,
     and more. Data comes from the Fritz!Box security diagnostics page.
     """
-    host = os.environ.get("FRITZBOX_HOST", "192.168.178.1")
     try:
         session, sid = _get_web_session()
-        r = session.post(f"http://{host}/data.lua", data={"sid": sid, "page": "secCheck"})
+        r = session.post(f"{_base_url()}/data.lua", data={"sid": sid, "page": "secCheck"}, timeout=REQ_TIMEOUT)
         d = r.json().get("data", {})
     except Exception as e:
         return json.dumps({"success": False, "error": str(e)})
@@ -374,7 +405,7 @@ async def fritzbox_security_check() -> str:
     return json.dumps(result, indent=2, ensure_ascii=False)
 
 
-@mcp.tool()
+@mcp.tool(annotations=_ann(read_only_hint=False, destructive_hint=True))
 async def fritzbox_web_action(page: str, apply: bool = False, fields: str = "{}") -> str:
     """Read or write any Fritz!Box web UI page via data.lua.
 
@@ -405,7 +436,6 @@ async def fritzbox_web_action(page: str, apply: bool = False, fields: str = "{}"
         apply: If True, write the fields to the page. If False, just read.
         fields: JSON object of form fields to submit (only used when apply=True)
     """
-    host = os.environ.get("FRITZBOX_HOST", "192.168.178.1")
     try:
         session, sid = _get_web_session()
     except Exception as e:
@@ -422,7 +452,7 @@ async def fritzbox_web_action(page: str, apply: bool = False, fields: str = "{}"
         payload.update(form)
 
     try:
-        r = session.post(f"http://{host}/data.lua", data=payload)
+        r = session.post(f"{_base_url()}/data.lua", data=payload, timeout=REQ_TIMEOUT)
         result = r.json()
         pid = result.get("pid", "")
         if pid == "overview" and pid != page:
@@ -442,7 +472,7 @@ async def fritzbox_web_action(page: str, apply: bool = False, fields: str = "{}"
 # ---- Generic TR-064 tools ------------------------------------------------
 
 
-@mcp.tool()
+@mcp.tool(annotations=_ann(read_only_hint=True))
 async def fritzbox_list_services(filter: str = "") -> str:
     """List all TR-064 services available on the Fritz!Box, with their actions.
 
@@ -464,7 +494,7 @@ async def fritzbox_list_services(filter: str = "") -> str:
     return json.dumps(result, indent=2)
 
 
-@mcp.tool()
+@mcp.tool(annotations=_ann(read_only_hint=False, destructive_hint=True))
 async def fritzbox_call_action(service: str, action: str, arguments: str = "{}") -> str:
     """Call any TR-064 action on the Fritz!Box.
 
@@ -500,7 +530,7 @@ async def fritzbox_call_action(service: str, action: str, arguments: str = "{}")
 # ---- Write tools (restricted) --------------------------------------------
 
 
-@mcp.tool()
+@mcp.tool(annotations=_ann(read_only_hint=False, idempotent_hint=True))
 async def fritzbox_set_device_profile(ip_address: str, disallow: bool) -> str:
     """Block or allow a device's internet (WAN) access by IP address.
 
@@ -532,7 +562,7 @@ async def fritzbox_set_device_profile(ip_address: str, disallow: bool) -> str:
         return json.dumps({"success": False, "error": str(e)}, indent=2)
 
 
-@mcp.tool()
+@mcp.tool(annotations=_ann(read_only_hint=False, idempotent_hint=True))
 async def fritzbox_toggle_upnp(enabled: bool) -> str:
     """Enable or disable UPnP port forwarding on the router.
 
@@ -560,7 +590,7 @@ async def fritzbox_toggle_upnp(enabled: bool) -> str:
         return json.dumps({"success": False, "error": str(e)}, indent=2)
 
 
-@mcp.tool()
+@mcp.tool(annotations=_ann(read_only_hint=False, idempotent_hint=True))
 async def fritzbox_toggle_wifi_guest(enabled: bool) -> str:
     """Enable or disable the guest WiFi network.
 
@@ -586,7 +616,7 @@ async def fritzbox_toggle_wifi_guest(enabled: bool) -> str:
         return json.dumps({"success": False, "error": str(e)}, indent=2)
 
 
-@mcp.tool()
+@mcp.tool(annotations=_ann(read_only_hint=False, destructive_hint=False))
 async def fritzbox_wake_on_lan(mac_address: str) -> str:
     """Send a Wake-on-LAN magic packet to wake a device.
 
