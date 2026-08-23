@@ -50,7 +50,15 @@ def _get_fc() -> FritzConnection:
         host = os.environ.get("FRITZBOX_HOST", "192.168.178.1")
         user = os.environ["FRITZBOX_USER"]
         password = os.environ["FRITZBOX_PASSWORD"]
-        _fc = FritzConnection(address=host, user=user, password=password)
+        _fc = FritzConnection(
+            address=host,
+            user=user,
+            password=password,
+            # Without this, a wedged router blocks call_action forever
+            # and hangs the whole MCP server's event loop.
+            timeout=REQ_TIMEOUT,
+            use_tls=os.environ.get("FRITZBOX_SCHEME", "http") == "https",
+        )
         log.info("Connected to Fritz!Box %s at %s", _fc.modelname, host)
     return _fc
 
