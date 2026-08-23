@@ -217,6 +217,9 @@ async def fritzbox_connection_status() -> str:
         "max_bit_rate": fs.str_max_bit_rate,
         "max_linked_bit_rate": fs.str_max_linked_bit_rate,
         "transmission_rate": fs.str_transmission_rate,
+        # Cumulative since last DSL resync — not a throughput rate
+        "bytes_sent": fs.bytes_sent,
+        "bytes_received": fs.bytes_received,
         "model": fs.modelname,
     }
     if dns_info:
@@ -729,6 +732,46 @@ async def fritzbox_smart_home_switch(ain: str, state: str) -> str:
         return json.dumps({"success": True, "ain": ain, "switch_state": result_state}, indent=2)
     except Exception as e:
         return json.dumps({"success": False, "error": _ha_error(e)}, indent=2)
+
+
+@mcp.tool(annotations=_ann(read_only_hint=True))
+async def fritzbox_line_stats() -> str:
+    """DSL line diagnostics: noise margin, attenuation, and total error counters
+    (FEC/CRC/HEC errors, resync count). Fields read "unavailable" on non-DSL
+    (cable/fiber) boxes or when the router does not report them.
+    """
+    fs = _get_status()
+    fc = _get_fc()
+    result = {
+        "noise_margin_db": list(fs.str_noise_margin),
+        "attenuation_db": list(fs.str_attenuation),
+    }
+    # Total-period DSL error counters (TR-064 WANDSLInterfaceConfig GetStatisticsTotal).
+    try:
+        stats = fc.call_action("WANDSLInterfaceConfig1", "GetStatisticsTotal")
+    except Exception as e:
+        result["dsl_errors"] = f"unavailable ({e})"
+        return json.dumps(result, indent=2)
+    result["dsl_errors"] = {
+        "fec_errors": stats.get("NewFECErrors", "unavailable"),
+        "crc_errors": stats.get("NewCRCErrors", "unavailable"),
+        "hec_errors": stats.get("NewHECErrors", "unavailable"),
+        "resync_count": stats.get("NewLinkRetrain", "unavailable"),
+        "severely_errored_secs": stats.get("NewSeverelyErroredSecs", "unavailable"),
+    }
+    return json.dumps(result, indent=2)
+
+
+@mcp.tool(annotations=_ann(read_only_hint=False, destructive_hint=True))
+async def fritzbox_reboot() -> str:
+    """Reboot the Fritz!Box. WARNING: the box drops offline for about 2 minutes;
+    internet and telephony are interrupted. All devices reconnect afterwards."""
+    fc = _get_fc()
+    try:
+        fc.reboot()
+        return json.dumps({"success": True, "message": "Reboot initiated — box will be offline for ~2 minutes"})
+    except Exception as e:
+        return json.dumps({"success": False, "error": str(e)}, indent=2)
 
 
 # ---------------------------------------------------------------------------
