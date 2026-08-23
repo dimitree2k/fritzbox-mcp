@@ -14,9 +14,11 @@ from pathlib import Path
 import requests
 from dotenv import load_dotenv
 from fritzconnection import FritzConnection
+from fritzconnection.core.exceptions import FritzAuthorizationError
 from fritzconnection.lib.fritzhosts import FritzHosts
 from fritzconnection.lib.fritzstatus import FritzStatus
 from fritzconnection.lib.fritzwlan import FritzWLAN
+from fritzconnection.lib.fritzhomeauto import FritzHomeAutomation
 from mcp.server.mcpserver import MCPServer
 from mcp.types import ToolAnnotations
 
@@ -39,6 +41,7 @@ _fc: FritzConnection | None = None
 _fh: FritzHosts | None = None
 _fs: FritzStatus | None = None
 _fw: FritzWLAN | None = None
+_ha: FritzHomeAutomation | None = None
 
 
 def _get_fc() -> FritzConnection:
@@ -71,6 +74,13 @@ def _get_wlan() -> FritzWLAN:
     if _fw is None:
         _fw = FritzWLAN(fc=_get_fc())
     return _fw
+
+
+def _get_homeauto() -> FritzHomeAutomation:
+    global _ha
+    if _ha is None:
+        _ha = FritzHomeAutomation(fc=_get_fc())
+    return _ha
 
 
 # ---------------------------------------------------------------------------
@@ -639,6 +649,86 @@ async def fritzbox_wake_on_lan(mac_address: str) -> str:
         }, indent=2)
     except Exception as e:
         return json.dumps({"success": False, "error": str(e)}, indent=2)
+
+
+# ---- Smart Home tools (TR-064 X_AVM-DE_Homeauto1) ------------------------
+
+
+def _normalize_ha_device(d: dict) -> dict:
+    """Map raw GetGenericDeviceInfos fields to the spec output contract.
+
+    Router reports everything as strings; null = device class does not
+    report this field (expected — capabilities vary per device).
+    """
+    def scaled(key: str, factor: float):
+        try:
+            return round(float(d.get(f"New{key}", "")) * factor, 2)
+        except (TypeError, ValueError):
+            return None
+
+    valid = lambda flag: d.get(f"New{flag}") == "VALID"  # noqa: E731
+
+    battery = d.get("NewBatteryLevel")
+    state = d.get("NewSwitchState", "")
+    return {
+        "ain": d.get("NewAIN", ""),
+        "name": d.get("NewDeviceName", ""),
+        "product": d.get("NewProductName", ""),
+        "present": d.get("NewPresent") == "CONNECTED",
+        "temperature_c": scaled("TemperatureCelsius", 0.1) if valid("TemperatureIsValid") else None,
+        "battery_percent": int(battery) if str(battery).isdigit() else None,
+        "power_w": scaled("MultimeterPower", 0.001) if valid("MultimeterIsValid") else None,
+        "energy_wh": scaled("MultimeterEnergy", 1.0) if valid("MultimeterIsValid") else None,
+        "switch_state": state.lower() if valid("SwitchIsValid") and state in ("ON", "OFF") else None,
+    }
+
+
+def _ha_error(e: Exception) -> str:
+    if isinstance(e, FritzAuthorizationError):
+        return "Fritz!Box user lacks Smart Home permission"
+    return str(e)
+
+
+@mcp.tool(annotations=_ann(read_only_hint=True))
+async def fritzbox_smart_home_devices() -> str:
+    """List all smart home devices (DECT plugs, thermostats, sensors) with
+    availability, switch state, temperature, battery, and power/energy where reported.
+
+    Fields are null when the device class does not report them.
+    """
+    ha = _get_homeauto()
+    try:
+        devices = [_normalize_ha_device(d) for d in ha.get_device_information_list()]
+    except FritzAuthorizationError:
+        return json.dumps({"success": False, "error": "Fritz!Box user lacks Smart Home permission"})
+    except Exception as e:
+        return json.dumps({"success": False, "error": str(e)}, indent=2)
+    devices.sort(key=lambda d: (not d["present"], d["name"].lower()))
+    return json.dumps(devices, indent=2)
+
+
+@mcp.tool(annotations=_ann(read_only_hint=False, destructive_hint=True))
+async def fritzbox_smart_home_switch(ain: str, state: str) -> str:
+    """Switch a smart home plug on/off or toggle it.
+
+    Args:
+        ain: Device AIN as shown by fritzbox_smart_home_devices (e.g. "08761 0114116")
+        state: "on", "off", or "toggle"
+    """
+    if state not in ("on", "off", "toggle"):
+        return json.dumps({"success": False, "error": "state must be one of: on, off, toggle"})
+    ha = _get_homeauto()
+    try:
+        if state == "toggle":
+            _get_fc().call_http("setswitchtoggle", ain)
+        else:
+            ha.set_switch(ain, state == "on")
+        # Verify by reading back the resulting state
+        dev_state = ha.get_device_information_by_identifier(ain).get("NewSwitchState", "")
+        result_state = dev_state.lower() if dev_state in ("ON", "OFF") else dev_state or "unknown"
+        return json.dumps({"success": True, "ain": ain, "switch_state": result_state}, indent=2)
+    except Exception as e:
+        return json.dumps({"success": False, "error": _ha_error(e)}, indent=2)
 
 
 # ---------------------------------------------------------------------------
