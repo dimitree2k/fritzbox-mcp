@@ -17,7 +17,7 @@ from fritzconnection import FritzConnection
 from fritzconnection.lib.fritzhosts import FritzHosts
 from fritzconnection.lib.fritzstatus import FritzStatus
 from fritzconnection.lib.fritzwlan import FritzWLAN
-from mcp.server.fastmcp import FastMCP
+from mcp.server.mcpserver import MCPServer
 
 # All logging to stderr — stdout is reserved for MCP stdio transport
 logging.basicConfig(
@@ -110,7 +110,7 @@ def _get_web_session() -> tuple[requests.Session, str]:
 # MCP Server
 # ---------------------------------------------------------------------------
 
-mcp = FastMCP("fritzbox")
+mcp = MCPServer("fritzbox")
 
 # ---- Read tools -----------------------------------------------------------
 

@@ -1,6 +1,6 @@
 # fritzbox-mcp
 
-MCP server for managing AVM Fritz!Box routers from Claude Code (or any MCP client).
+MCP server + portable [Agent Skill](https://agentskills.io) for managing AVM Fritz!Box routers from any AI agent — Claude Code, Codex CLI, Gemini CLI, Cursor, Copilot, and any other MCP client.
 
 Uses [fritzconnection](https://github.com/kbr/fritzconnection) to talk TR-064 over your local network. Single Python file, stdio transport, no compilation needed.
 
@@ -55,15 +55,34 @@ FRITZBOX_USER=your_username
 FRITZBOX_PASSWORD=your_password
 ```
 
-> Create a dedicated Fritz!Box user under System > Fritz!Box Users with "Fritz!Box Settings" and "Smart Home" permissions. Don't reuse your admin account.
+### Register the MCP server
 
-Register with Claude Code:
+Pick your client (server command is the same everywhere):
 
 ```bash
+# Claude Code
 claude mcp add -s user fritzbox -- uv run --directory /path/to/fritzbox-mcp python server.py
+
+# Codex CLI (~/.codex/config.toml)
+[mcp_servers.fritzbox]
+command = "uv"
+args = ["run", "--directory", "/path/to/fritzbox-mcp", "python", "server.py"]
+
+# Cursor / VS Code / Gemini CLI — add an stdio MCP server entry:
+#   command: uv, args: run --directory /path/to/fritzbox-mcp python server.py
 ```
 
-Restart Claude Code. The 15 tools will be available in all sessions.
+Restart your client. The 15 tools will be available in all sessions.
+
+### Or install as an Agent Skill
+
+`skills/fritzbox/` follows the open [Agent Skills](https://agentskills.io/specification) standard (validated). Copy or symlink it into any conformant agent's skills directory to teach the agent direct Fritz!Box control via `fritzconnection` — no MCP client required:
+
+```bash
+# Claude Code
+ln -s /path/to/fritzbox-mcp/skills/fritzbox ~/.claude/skills/fritzbox
+# Gemini CLI / Codex / others: same folder into their skills dir
+```
 
 ## Fritz!Box User Setup
 
@@ -75,7 +94,7 @@ Restart Claude Code. The 15 tools will be available in all sessions.
 
 ## How It Works
 
-- **stdio transport** -- Claude Code spawns the server as a subprocess, communicates via stdin/stdout
+- **stdio transport** -- the client spawns the server as a subprocess, communicates via stdin/stdout (MCP spec 2026-07-28, SDK v2 — serves old and new protocol revisions)
 - **Credentials** stay in `.env` (gitignored), never exposed to the LLM
 - **Lazy connection** -- connects to the Fritz!Box on first tool call, not at startup
 - **Dual API** -- TR-064 for standard operations, web UI session for security diagnostics
