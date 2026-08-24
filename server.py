@@ -10,15 +10,15 @@ import os
 import sys
 import xml.etree.ElementTree as ET
 from pathlib import Path
+from typing import Any
 
 import requests
 from dotenv import load_dotenv
 from fritzconnection import FritzConnection
 from fritzconnection.core.exceptions import FritzAuthorizationError
+from fritzconnection.lib.fritzhomeauto import FritzHomeAutomation
 from fritzconnection.lib.fritzhosts import FritzHosts
 from fritzconnection.lib.fritzstatus import FritzStatus
-from fritzconnection.lib.fritzwlan import FritzWLAN
-from fritzconnection.lib.fritzhomeauto import FritzHomeAutomation
 from mcp.server.mcpserver import MCPServer
 from mcp.types import ToolAnnotations
 
@@ -40,8 +40,14 @@ load_dotenv(Path(__file__).parent / ".env")
 _fc: FritzConnection | None = None
 _fh: FritzHosts | None = None
 _fs: FritzStatus | None = None
-_fw: FritzWLAN | None = None
 _ha: FritzHomeAutomation | None = None
+
+
+def _xml_child_text(root: ET.Element, tag: str) -> str:
+    child = root.find(tag)
+    if child is None or child.text is None:
+        raise RuntimeError(f"Fritz!Box login response missing <{tag}>")
+    return child.text
 
 
 def _get_fc() -> FritzConnection:
@@ -77,13 +83,6 @@ def _get_status() -> FritzStatus:
     return _fs
 
 
-def _get_wlan() -> FritzWLAN:
-    global _fw
-    if _fw is None:
-        _fw = FritzWLAN(fc=_get_fc())
-    return _fw
-
-
 def _get_homeauto() -> FritzHomeAutomation:
     global _ha
     if _ha is None:
@@ -117,7 +116,7 @@ def _get_web_session() -> tuple[requests.Session, str]:
             r = _web_session_obj.get(
                 f"{_base_url()}/login_sid.lua", params={"sid": _web_sid}, timeout=REQ_TIMEOUT
             )
-            if ET.fromstring(r.text).find("SID").text == _web_sid:
+            if _xml_child_text(ET.fromstring(r.text), "SID") == _web_sid:
                 return _web_session_obj, _web_sid
         except Exception as e:
             log.info("Cached web session check failed (%s), re-authenticating", e)
@@ -128,8 +127,7 @@ def _get_web_session() -> tuple[requests.Session, str]:
 
     s = requests.Session()
     r = s.get(f"{_base_url()}/login_sid.lua?version=2", timeout=REQ_TIMEOUT)
-    root = ET.fromstring(r.text)
-    challenge = root.find("Challenge").text
+    challenge = _xml_child_text(ET.fromstring(r.text), "Challenge")
 
     # PBKDF2 challenge-response (Fritz!OS 7.24+)
     parts = challenge.split("$")
@@ -143,7 +141,7 @@ def _get_web_session() -> tuple[requests.Session, str]:
     response = f"{parts[4]}${hash2.hex()}"
 
     r = s.post(f"{_base_url()}/login_sid.lua", data={"username": user, "response": response}, timeout=REQ_TIMEOUT)
-    sid = ET.fromstring(r.text).find("SID").text
+    sid = _xml_child_text(ET.fromstring(r.text), "SID")
     if sid == "0000000000000000":
         raise RuntimeError("Fritz!Box web UI login failed — check credentials")
     _web_session_obj, _web_sid = s, sid
@@ -213,8 +211,8 @@ async def fritzbox_connection_status() -> str:
     except Exception:
         try:
             dns_info = fc.call_action("WANPPPConnection1", "GetDNSServers")
-        except Exception:
-            pass
+        except Exception as e:
+            log.debug("No DNS servers reported by either WAN service: %s", e)
 
     result = {
         "connected": fs.is_connected,
@@ -618,10 +616,9 @@ async def fritzbox_toggle_wifi_guest(enabled: bool) -> str:
     Args:
         enabled: True to enable guest WiFi, False to disable
     """
-    fw = _get_wlan()
+    fc = _get_fc()
     try:
         # Guest WiFi is typically WLANConfiguration3
-        fc = _get_fc()
         if enabled:
             fc.call_action("WLANConfiguration3", "Enable")
         else:
@@ -677,7 +674,7 @@ def _normalize_ha_device(d: dict) -> dict:
         except (TypeError, ValueError):
             return None
 
-    valid = lambda flag: d.get(f"New{flag}") == "VALID"  # noqa: E731
+    valid = lambda flag: d.get(f"New{flag}") == "VALID"
 
     battery = d.get("NewBatteryLevel")
     state = d.get("NewSwitchState", "")
@@ -687,7 +684,7 @@ def _normalize_ha_device(d: dict) -> dict:
         "product": d.get("NewProductName", ""),
         "present": d.get("NewPresent") == "CONNECTED",
         "temperature_c": scaled("TemperatureCelsius", 0.1) if valid("TemperatureIsValid") else None,
-        "battery_percent": int(battery) if str(battery).isdigit() else None,
+        "battery_percent": int(battery) if isinstance(battery, str) and battery.isdigit() else None,
         "power_w": scaled("MultimeterPower", 0.001) if valid("MultimeterIsValid") else None,
         "energy_wh": scaled("MultimeterEnergy", 1.0) if valid("MultimeterIsValid") else None,
         "switch_state": state.lower() if valid("SwitchIsValid") and state in ("ON", "OFF") else None,
@@ -750,7 +747,7 @@ async def fritzbox_line_stats() -> str:
     """
     fs = _get_status()
     fc = _get_fc()
-    result = {
+    result: dict[str, Any] = {
         "noise_margin_db": list(fs.str_noise_margin),
         "attenuation_db": list(fs.str_attenuation),
     }
@@ -758,7 +755,7 @@ async def fritzbox_line_stats() -> str:
     try:
         stats = fc.call_action("WANDSLInterfaceConfig1", "GetStatisticsTotal")
     except Exception as e:
-        result["dsl_errors"] = f"unavailable ({e})"
+        result["dsl_errors"] = {"error": f"unavailable ({e})"}
         return json.dumps(result, indent=2)
     result["dsl_errors"] = {
         "fec_errors": stats.get("NewFECErrors", "unavailable"),

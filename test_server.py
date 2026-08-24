@@ -174,7 +174,7 @@ class TestLineStats(unittest.IsolatedAsyncioTestCase):
         finally:
             server._fc = old_fc
             server._fs = None
-        self.assertIn("unavailable", result["dsl_errors"])
+        self.assertIn("unavailable", result["dsl_errors"]["error"])
 
 
 class TestSwitchValidation(unittest.IsolatedAsyncioTestCase):

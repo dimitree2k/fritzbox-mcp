@@ -17,3 +17,20 @@ packages = ["."]
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+[dependency-groups]
+dev = [
+    "ruff>=0.9",
+    "mypy>=1.14",
+    "types-requests",
+]
+
+[tool.ruff.lint]
+# BLE001 (blind except): tool boundaries deliberately catch Exception and
+# return error JSON — a router hiccup must never kill the MCP session.
+ignore = ["BLE001"]
+
+[tool.mypy]
+[[tool.mypy.overrides]]
+module = "fritzconnection.*"
+ignore_missing_imports = true
