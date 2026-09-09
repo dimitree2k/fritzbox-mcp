@@ -1,29 +1,40 @@
 # fritzbox-mcp
 
-MCP server for managing AVM Fritz!Box routers from Claude Code (or any MCP client).
+MCP server + portable [Agent Skill](https://agentskills.io) for managing AVM Fritz!Box routers from any AI agent — Claude Code, Codex CLI, Gemini CLI, Cursor, Copilot, and any other MCP client.
 
 Uses [fritzconnection](https://github.com/kbr/fritzconnection) to talk TR-064 over your local network. Single Python file, stdio transport, no compilation needed.
 
 ## Tools
 
-**Curated tools** (11):
+**Curated tools** (23):
 
 | Tool | Description |
 |------|-------------|
 | `fritzbox_device_list` | All network devices (name, IP, MAC, online/offline) |
 | `fritzbox_device_info` | Detailed info for one device (by IP or MAC) |
-| `fritzbox_connection_status` | WAN status (external IP, uptime, speed) |
+| `fritzbox_connection_status` | WAN status (external IP, uptime, speed, byte counters) |
+| `fritzbox_wan_link_status` | WAN access type, physical link state, and link speeds |
+| `fritzbox_wan_traffic_stats` | Cumulative WAN byte and packet counters |
 | `fritzbox_port_forwards` | Active port forwarding rules |
 | `fritzbox_firmware_info` | Firmware version + update availability |
 | `fritzbox_wifi_status` | WiFi networks (SSID, channel, standard) |
+| `fritzbox_wifi_clients` | Currently associated WiFi clients (signal, speed, IP/MAC) |
+| `fritzbox_wifi_statistics` | WiFi packet counters by network |
+| `fritzbox_wifi_channel_info` | WiFi channel and frequency-band information |
+| `fritzbox_lan_config` | LAN address range, DHCP, DNS, and router configuration |
+| `fritzbox_ethernet_status` | LAN Ethernet link state and traffic counters |
 | `fritzbox_logs` | Recent system event log |
 | `fritzbox_security_check` | Full security audit (firewall, WiFi, users, NAS, telephony, TR-069) |
+| `fritzbox_smart_home_devices` | DECT smart home devices (switch state, temperature, battery, power) |
+| `fritzbox_line_stats` | DSL diagnostics (noise margin, attenuation, FEC/CRC errors, resyncs) |
 | `fritzbox_set_device_profile` | Block/allow a device's internet access |
 | `fritzbox_toggle_upnp` | Enable/disable UPnP port forwarding |
 | `fritzbox_toggle_wifi_guest` | Enable/disable guest WiFi |
 | `fritzbox_wake_on_lan` | Send Wake-on-LAN packet |
+| `fritzbox_smart_home_switch` | Switch a smart home plug on/off/toggle |
+| `fritzbox_reboot` | Reboot the box (~2 min offline) |
 
-**Generic tools** (4):
+**Generic tools** (3):
 
 | Tool | Description |
 |------|-------------|
@@ -32,6 +43,26 @@ Uses [fritzconnection](https://github.com/kbr/fritzconnection) to talk TR-064 ov
 | `fritzbox_web_action` | Read/write any Fritz!Box web UI page via data.lua |
 
 The generic tools let the LLM discover and use any Fritz!Box capability without needing a dedicated tool. `fritzbox_list_services` + `fritzbox_call_action` cover TR-064, while `fritzbox_web_action` covers settings only available through the web UI (stealth mode, global filters, parental controls, etc.).
+
+## Planned read-only extensions
+
+These capabilities are identified for future dedicated tools. They are not
+currently exposed as named tools; use `fritzbox_list_services` only for
+separately approved, read-only investigation.
+
+| Planned tool | Read-only scope |
+|--------------|----------------|
+| `fritzbox_routing_table` | Active Layer-3 routes and the default gateway |
+| `fritzbox_time_status` | Router time, time zone, and NTP state |
+| `fritzbox_speedtest_status` | Existing speed-test status and statistics; never reset them |
+| `fritzbox_wifi_security_status` | Wi-Fi encryption/authentication mode without keys or WPS data |
+| `fritzbox_dect_handsets` | Connected DECT handset inventory |
+| `fritzbox_remote_access_status` | Remote-access and DDNS state without changing it |
+| `fritzbox_storage_status` | Basic NAS/storage availability without account secrets |
+| `fritzbox_myfritz_status` | MyFRITZ! registration and service state |
+
+The planned tools must remain read-only and must not expose Wi-Fi keys, WPS
+PINs, user passwords, VoIP credentials, or other account secrets.
 
 ## Setup
 
@@ -55,15 +86,34 @@ FRITZBOX_USER=your_username
 FRITZBOX_PASSWORD=your_password
 ```
 
-> Create a dedicated Fritz!Box user under System > Fritz!Box Users with "Fritz!Box Settings" and "Smart Home" permissions. Don't reuse your admin account.
+### Register the MCP server
 
-Register with Claude Code:
+Pick your client (server command is the same everywhere):
 
 ```bash
+# Claude Code
 claude mcp add -s user fritzbox -- uv run --directory /path/to/fritzbox-mcp python server.py
+
+# Codex CLI (~/.codex/config.toml)
+[mcp_servers.fritzbox]
+command = "uv"
+args = ["run", "--directory", "/path/to/fritzbox-mcp", "python", "server.py"]
+
+# Cursor / VS Code / Gemini CLI — add an stdio MCP server entry:
+#   command: uv, args: run --directory /path/to/fritzbox-mcp python server.py
 ```
 
-Restart Claude Code. The 15 tools will be available in all sessions.
+Restart your client. The 26 tools will be available in all sessions.
+
+### Or install as an Agent Skill
+
+`skills/fritzbox/` follows the open [Agent Skills](https://agentskills.io/specification) standard (validated). Copy or symlink it into any conformant agent's skills directory to teach the agent direct Fritz!Box control via `fritzconnection` — no MCP client required:
+
+```bash
+# Claude Code
+ln -s /path/to/fritzbox-mcp/skills/fritzbox ~/.claude/skills/fritzbox
+# Gemini CLI / Codex / others: same folder into their skills dir
+```
 
 ## Fritz!Box User Setup
 
@@ -75,11 +125,27 @@ Restart Claude Code. The 15 tools will be available in all sessions.
 
 ## How It Works
 
-- **stdio transport** -- Claude Code spawns the server as a subprocess, communicates via stdin/stdout
+- **stdio transport** -- the client spawns the server as a subprocess, communicates via stdin/stdout (MCP spec 2026-07-28, SDK v2 — serves old and new protocol revisions)
 - **Credentials** stay in `.env` (gitignored), never exposed to the LLM
 - **Lazy connection** -- connects to the Fritz!Box on first tool call, not at startup
 - **Dual API** -- TR-064 for standard operations, web UI session for security diagnostics
 - **All logging to stderr** -- stdout is reserved for MCP protocol
+
+## Development
+
+```bash
+uv run python -m unittest test_server.py -v   # no router needed
+
+# live smoke test against your box:
+uv run python -c "
+import asyncio, server
+from mcp import Client
+async def smoke():
+    async with Client(server.mcp) as c:
+        print((await c.call_tool('fritzbox_connection_status', {})).content)
+asyncio.run(smoke())
+"
+```
 
 ## License
 
