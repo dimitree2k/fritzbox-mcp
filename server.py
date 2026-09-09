@@ -65,6 +65,14 @@ def _get_fc() -> FritzConnection:
             timeout=REQ_TIMEOUT,
             use_tls=os.environ.get("FRITZBOX_SCHEME", "http") == "https",
         )
+        # fritzconnection's FritzStatus uses shortened service names that
+        # newer Cable firmware exposes under the canonical TR-064 names.
+        for alias, canonical in (
+            ("WANIPConn1", "WANIPConnection1"),
+            ("WANCommonIFC1", "WANCommonInterfaceConfig1"),
+        ):
+            if alias not in _fc.services and canonical in _fc.services:
+                _fc.services[alias] = _fc.services[canonical]
         log.info("Connected to Fritz!Box %s at %s", _fc.modelname, host)
     return _fc
 
@@ -218,19 +226,66 @@ async def fritzbox_connection_status() -> str:
         "connected": fs.is_connected,
         "linked": fs.is_linked,
         "external_ip": fs.external_ip,
-        "external_ipv6": fs.external_ipv6,
+        "external_ipv6": None,
         "uptime": fs.str_uptime,
         "max_bit_rate": fs.str_max_bit_rate,
         "max_linked_bit_rate": fs.str_max_linked_bit_rate,
-        "transmission_rate": fs.str_transmission_rate,
+        "transmission_rate": None,
         # Cumulative since last DSL resync — not a throughput rate
-        "bytes_sent": fs.bytes_sent,
-        "bytes_received": fs.bytes_received,
+        "bytes_sent": None,
+        "bytes_received": None,
         "model": fs.modelname,
     }
+    try:
+        result["external_ipv6"] = fs.external_ipv6
+    except Exception as e:
+        log.debug("External IPv6 unavailable: %s", e)
+    try:
+        result["transmission_rate"] = fs.str_transmission_rate
+    except Exception as e:
+        log.debug("Transmission rate unavailable: %s", e)
+    try:
+        result["bytes_sent"] = fs.bytes_sent
+        result["bytes_received"] = fs.bytes_received
+    except Exception as e:
+        log.debug("WAN byte counters unavailable: %s", e)
     if dns_info:
         result["dns_servers"] = dns_info
     return json.dumps(result, indent=2, default=str)
+
+
+@mcp.tool(annotations=_ann(read_only_hint=True))
+async def fritzbox_wan_link_status() -> str:
+    """Get WAN access type, physical link state, and link speed properties."""
+    fc = _get_fc()
+    info = fc.call_action(
+        "WANCommonInterfaceConfig1",
+        "GetCommonLinkProperties",
+    )
+    return json.dumps({
+        "access_type": info.get("NewWANAccessType", ""),
+        "physical_link_status": info.get("NewPhysicalLinkStatus", ""),
+        "upstream_max_bit_rate": info.get("NewLayer1UpstreamMaxBitRate"),
+        "downstream_max_bit_rate": info.get("NewLayer1DownstreamMaxBitRate"),
+        "upstream_current_max_speed": info.get("NewX_AVM-DE_UpstreamCurrentMaxSpeed"),
+        "downstream_current_max_speed": info.get("NewX_AVM-DE_DownstreamCurrentMaxSpeed"),
+    }, indent=2)
+
+
+@mcp.tool(annotations=_ann(read_only_hint=True))
+async def fritzbox_wan_traffic_stats() -> str:
+    """Get cumulative WAN byte and packet counters."""
+    fc = _get_fc()
+    sent = fc.call_action("WANCommonInterfaceConfig1", "GetTotalBytesSent")
+    received = fc.call_action("WANCommonInterfaceConfig1", "GetTotalBytesReceived")
+    packets_sent = fc.call_action("WANCommonInterfaceConfig1", "GetTotalPacketsSent")
+    packets_received = fc.call_action("WANCommonInterfaceConfig1", "GetTotalPacketsReceived")
+    return json.dumps({
+        "bytes_sent": sent.get("NewTotalBytesSent"),
+        "bytes_received": received.get("NewTotalBytesReceived"),
+        "packets_sent": packets_sent.get("NewTotalPacketsSent"),
+        "packets_received": packets_received.get("NewTotalPacketsReceived"),
+    }, indent=2)
 
 
 @mcp.tool(annotations=_ann(read_only_hint=True))
@@ -296,6 +351,122 @@ async def fritzbox_wifi_status() -> str:
         except Exception:
             break
     return json.dumps(networks, indent=2)
+
+
+@mcp.tool(annotations=_ann(read_only_hint=True))
+async def fritzbox_wifi_clients() -> str:
+    """List clients currently associated with the Fritz!Box WiFi networks."""
+    fc = _get_fc()
+    clients = []
+    for network_index in range(1, 5):
+        service = f"WLANConfiguration{network_index}"
+        try:
+            ssid = fc.call_action(service, "GetInfo").get("NewSSID", "")
+            total = int(fc.call_action(service, "GetTotalAssociations").get(
+                "NewTotalAssociations", 0
+            ))
+        except Exception:
+            break
+        for index in range(total):
+            try:
+                host = fc.call_action(
+                    service,
+                    "GetGenericAssociatedDeviceInfo",
+                    NewAssociatedDeviceIndex=index,
+                )
+            except Exception:
+                continue
+            clients.append({
+                "network_index": network_index,
+                "ssid": ssid,
+                "index": index,
+                "status": host.get("NewAssociatedDeviceAuthState", ""),
+                "mac": host.get("NewAssociatedDeviceMACAddress", ""),
+                "ip": host.get("NewAssociatedDeviceIPAddress", ""),
+                "signal": host.get("NewX_AVM-DE_SignalStrength"),
+                "speed": host.get("NewX_AVM-DE_Speed"),
+            })
+    return json.dumps(clients, indent=2)
+
+
+@mcp.tool(annotations=_ann(read_only_hint=True))
+async def fritzbox_wifi_statistics() -> str:
+    """Get packet counters for the Fritz!Box WiFi networks."""
+    fc = _get_fc()
+    networks = []
+    for network_index in range(1, 5):
+        service = f"WLANConfiguration{network_index}"
+        try:
+            ssid = fc.call_action(service, "GetInfo").get("NewSSID", "")
+            stats = fc.call_action(service, "GetStatistics")
+        except Exception:
+            break
+        networks.append({
+            "index": network_index,
+            "ssid": ssid,
+            "packets_sent": stats.get("NewTotalPacketsSent"),
+            "packets_received": stats.get("NewTotalPacketsReceived"),
+        })
+    return json.dumps(networks, indent=2)
+
+
+@mcp.tool(annotations=_ann(read_only_hint=True))
+async def fritzbox_wifi_channel_info() -> str:
+    """Get channel and frequency-band information for the WiFi networks."""
+    fc = _get_fc()
+    networks = []
+    for network_index in range(1, 5):
+        service = f"WLANConfiguration{network_index}"
+        try:
+            ssid = fc.call_action(service, "GetInfo").get("NewSSID", "")
+            channel = fc.call_action(service, "GetChannelInfo")
+        except Exception:
+            break
+        networks.append({
+            "index": network_index,
+            "ssid": ssid,
+            "channel": channel.get("NewChannel"),
+            "possible_channels": channel.get("NewPossibleChannels", ""),
+            "auto_channel": channel.get("NewX_AVM-DE_AutoChannelEnabled"),
+            "frequency_band": channel.get("NewX_AVM-DE_FrequencyBand", ""),
+        })
+    return json.dumps(networks, indent=2)
+
+
+@mcp.tool(annotations=_ann(read_only_hint=True))
+async def fritzbox_lan_config() -> str:
+    """Get LAN address, DHCP, DNS, and router configuration."""
+    fc = _get_fc()
+    info = fc.call_action("LANHostConfigManagement1", "GetInfo")
+    return json.dumps({
+        "dhcp_enabled": info.get("NewDHCPServerEnable"),
+        "min_address": info.get("NewMinAddress", ""),
+        "max_address": info.get("NewMaxAddress", ""),
+        "reserved_addresses": info.get("NewReservedAddresses", ""),
+        "dns_servers": info.get("NewDNSServers", ""),
+        "domain_name": info.get("NewDomainName", ""),
+        "ip_routers": info.get("NewIPRouters", ""),
+        "subnet_mask": info.get("NewSubnetMask", ""),
+    }, indent=2)
+
+
+@mcp.tool(annotations=_ann(read_only_hint=True))
+async def fritzbox_ethernet_status() -> str:
+    """Get LAN Ethernet link state and traffic counters."""
+    fc = _get_fc()
+    info = fc.call_action("LANEthernetInterfaceConfig1", "GetInfo")
+    stats = fc.call_action("LANEthernetInterfaceConfig1", "GetStatistics")
+    return json.dumps({
+        "enabled": info.get("NewEnable"),
+        "status": info.get("NewStatus", ""),
+        "mac": info.get("NewMACAddress", ""),
+        "max_bit_rate": info.get("NewMaxBitRate", ""),
+        "duplex_mode": info.get("NewDuplexMode", ""),
+        "bytes_sent": stats.get("NewBytesSent"),
+        "bytes_received": stats.get("NewBytesReceived"),
+        "packets_sent": stats.get("NewPacketsSent"),
+        "packets_received": stats.get("NewPacketsReceived"),
+    }, indent=2)
 
 
 @mcp.tool(annotations=_ann(read_only_hint=True))

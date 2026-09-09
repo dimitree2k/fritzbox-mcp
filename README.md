@@ -6,16 +6,23 @@ Uses [fritzconnection](https://github.com/kbr/fritzconnection) to talk TR-064 ov
 
 ## Tools
 
-**Curated tools** (16):
+**Curated tools** (23):
 
 | Tool | Description |
 |------|-------------|
 | `fritzbox_device_list` | All network devices (name, IP, MAC, online/offline) |
 | `fritzbox_device_info` | Detailed info for one device (by IP or MAC) |
 | `fritzbox_connection_status` | WAN status (external IP, uptime, speed, byte counters) |
+| `fritzbox_wan_link_status` | WAN access type, physical link state, and link speeds |
+| `fritzbox_wan_traffic_stats` | Cumulative WAN byte and packet counters |
 | `fritzbox_port_forwards` | Active port forwarding rules |
 | `fritzbox_firmware_info` | Firmware version + update availability |
 | `fritzbox_wifi_status` | WiFi networks (SSID, channel, standard) |
+| `fritzbox_wifi_clients` | Currently associated WiFi clients (signal, speed, IP/MAC) |
+| `fritzbox_wifi_statistics` | WiFi packet counters by network |
+| `fritzbox_wifi_channel_info` | WiFi channel and frequency-band information |
+| `fritzbox_lan_config` | LAN address range, DHCP, DNS, and router configuration |
+| `fritzbox_ethernet_status` | LAN Ethernet link state and traffic counters |
 | `fritzbox_logs` | Recent system event log |
 | `fritzbox_security_check` | Full security audit (firewall, WiFi, users, NAS, telephony, TR-069) |
 | `fritzbox_smart_home_devices` | DECT smart home devices (switch state, temperature, battery, power) |
@@ -36,6 +43,26 @@ Uses [fritzconnection](https://github.com/kbr/fritzconnection) to talk TR-064 ov
 | `fritzbox_web_action` | Read/write any Fritz!Box web UI page via data.lua |
 
 The generic tools let the LLM discover and use any Fritz!Box capability without needing a dedicated tool. `fritzbox_list_services` + `fritzbox_call_action` cover TR-064, while `fritzbox_web_action` covers settings only available through the web UI (stealth mode, global filters, parental controls, etc.).
+
+## Planned read-only extensions
+
+These capabilities are identified for future dedicated tools. They are not
+currently exposed as named tools; use `fritzbox_list_services` only for
+separately approved, read-only investigation.
+
+| Planned tool | Read-only scope |
+|--------------|----------------|
+| `fritzbox_routing_table` | Active Layer-3 routes and the default gateway |
+| `fritzbox_time_status` | Router time, time zone, and NTP state |
+| `fritzbox_speedtest_status` | Existing speed-test status and statistics; never reset them |
+| `fritzbox_wifi_security_status` | Wi-Fi encryption/authentication mode without keys or WPS data |
+| `fritzbox_dect_handsets` | Connected DECT handset inventory |
+| `fritzbox_remote_access_status` | Remote-access and DDNS state without changing it |
+| `fritzbox_storage_status` | Basic NAS/storage availability without account secrets |
+| `fritzbox_myfritz_status` | MyFRITZ! registration and service state |
+
+The planned tools must remain read-only and must not expose Wi-Fi keys, WPS
+PINs, user passwords, VoIP credentials, or other account secrets.
 
 ## Setup
 
@@ -76,7 +103,7 @@ args = ["run", "--directory", "/path/to/fritzbox-mcp", "python", "server.py"]
 #   command: uv, args: run --directory /path/to/fritzbox-mcp python server.py
 ```
 
-Restart your client. The 19 tools will be available in all sessions.
+Restart your client. The 26 tools will be available in all sessions.
 
 ### Or install as an Agent Skill
 
