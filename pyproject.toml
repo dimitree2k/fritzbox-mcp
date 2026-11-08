@@ -11,6 +11,10 @@ dependencies = [
     "python-dotenv>=1.0",
 ]
 
+[project.optional-dependencies]
+# Read FRITZBOX_PASSWORD from the OS keyring instead of .env
+keyring = ["keyring>=24.0"]
+
 [tool.hatch.build.targets.wheel]
 packages = ["."]
 
@@ -32,5 +36,5 @@ ignore = ["BLE001"]
 
 [tool.mypy]
 [[tool.mypy.overrides]]
-module = "fritzconnection.*"
+module = ["fritzconnection.*", "keyring"]
 ignore_missing_imports = true

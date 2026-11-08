@@ -33,6 +33,39 @@ log = logging.getLogger("fritzbox-mcp")
 # Load .env from project directory (credentials never in Claude's settings)
 load_dotenv(Path(__file__).parent / ".env")
 
+KEYRING_SERVICE = "fritzbox-mcp"
+
+
+def _credentials() -> tuple[str, str, str]:
+    """Return (host, user, password).
+
+    FRITZBOX_PASSWORD wins when it is set. Otherwise the password comes from
+    the OS keyring (Windows Credential Manager, macOS Keychain, Secret
+    Service), stored under service "fritzbox-mcp" and FRITZBOX_USER, so it
+    does not have to sit in .env as plain text. The keyring package is the
+    optional "keyring" extra, so it is only imported on this path.
+    """
+    host = os.environ.get("FRITZBOX_HOST", "192.168.178.1")
+    user = os.environ["FRITZBOX_USER"]
+    password = os.environ.get("FRITZBOX_PASSWORD")
+    if not password:
+        try:
+            import keyring
+        except ImportError:
+            raise RuntimeError(
+                "FRITZBOX_PASSWORD is not set and the keyring extra is not installed. "
+                "Set FRITZBOX_PASSWORD, or run the server with: uv run --extra keyring ..."
+            ) from None
+
+        password = keyring.get_password(KEYRING_SERVICE, user)
+        if not password:
+            raise RuntimeError(
+                "FRITZBOX_PASSWORD is not set and the keyring holds no password for "
+                f"service {KEYRING_SERVICE!r}, user {user!r}. Store it with: "
+                f"uv run --extra keyring keyring set {KEYRING_SERVICE} {user}"
+            )
+    return host, user, password
+
 # ---------------------------------------------------------------------------
 # Fritz!Box connection (lazy singleton)
 # ---------------------------------------------------------------------------
@@ -53,9 +86,7 @@ def _xml_child_text(root: ET.Element, tag: str) -> str:
 def _get_fc() -> FritzConnection:
     global _fc
     if _fc is None:
-        host = os.environ.get("FRITZBOX_HOST", "192.168.178.1")
-        user = os.environ["FRITZBOX_USER"]
-        password = os.environ["FRITZBOX_PASSWORD"]
+        host, user, password = _credentials()
         _fc = FritzConnection(
             address=host,
             user=user,
@@ -130,8 +161,7 @@ def _get_web_session() -> tuple[requests.Session, str]:
             log.info("Cached web session check failed (%s), re-authenticating", e)
         log.info("Web session stale, re-authenticating")
 
-    user = os.environ["FRITZBOX_USER"]
-    password = os.environ["FRITZBOX_PASSWORD"]
+    _, user, password = _credentials()
 
     s = requests.Session()
     r = s.get(f"{_base_url()}/login_sid.lua?version=2", timeout=REQ_TIMEOUT)
