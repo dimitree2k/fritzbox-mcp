@@ -88,6 +88,14 @@ FRITZBOX_PASSWORD=your_password
 
 ### Register the MCP server
 
+To keep the password out of `.env`, drop the `FRITZBOX_PASSWORD` line and store it in the OS keyring (Windows Credential Manager, macOS Keychain, Secret Service) instead. This needs the optional `keyring` extra:
+
+```bash
+uv run --extra keyring keyring set fritzbox-mcp your_username
+```
+
+Then add `--extra keyring` to the server command below as well (`uv run --extra keyring --directory …`). `FRITZBOX_PASSWORD` still wins when it is set. The keyring keeps the password out of files that are easy to grep for, but any program running as your user can still ask the keyring for it, the same way the server does.
+
 Pick your client (server command is the same everywhere):
 
 ```bash
@@ -126,7 +134,7 @@ ln -s /path/to/fritzbox-mcp/skills/fritzbox ~/.claude/skills/fritzbox
 ## How It Works
 
 - **stdio transport** -- the client spawns the server as a subprocess, communicates via stdin/stdout (MCP spec 2026-07-28, SDK v2 — serves old and new protocol revisions)
-- **Credentials** stay in `.env` (gitignored), never exposed to the LLM
+- **Credentials** stay in `.env` (gitignored) or the OS keyring, never exposed to the LLM
 - **Lazy connection** -- connects to the Fritz!Box on first tool call, not at startup
 - **Dual API** -- TR-064 for standard operations, web UI session for security diagnostics
 - **All logging to stderr** -- stdout is reserved for MCP protocol
